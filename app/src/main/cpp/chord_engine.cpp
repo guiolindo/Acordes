@@ -166,15 +166,15 @@ bool ChordEngine::start(ChordCallback callback) {
     g_callback = std::make_unique<AudioCallback>(this);
 
     oboe::AudioStreamBuilder builder;
-    builder.setDirection(oboe::Direction::Input)
-           .setPerformanceMode(oboe::PerformanceMode::LowLatency)
-           .setSharingMode(oboe::SharingMode::Exclusive)
-           .setFormat(oboe::AudioFormat::Float)
-           .setChannelCount(oboe::ChannelCount::Mono)
-           .setSampleRate(SAMPLE_RATE)
-           .setFramesPerDataCallback(HOP_SIZE)
-           .setDataCallback(g_callback.get())
-           .setInputPreset(oboe::InputPreset::Unprocessed);
+    builder.setDirection(oboe::Direction::Input);
+    builder.setPerformanceMode(oboe::PerformanceMode::LowLatency);
+    builder.setSharingMode(oboe::SharingMode::Exclusive);
+    builder.setFormat(oboe::AudioFormat::Float);
+    builder.setChannelCount(oboe::ChannelCount::Mono);
+    builder.setSampleRate(SAMPLE_RATE);
+    builder.setFramesPerDataCallback(HOP_SIZE);
+    builder.setDataCallback(g_callback.get());
+    builder.setInputPreset(oboe::InputPreset::Unprocessed);
 
     oboe::AudioStream* stream = nullptr;
     oboe::Result result = builder.openStream(&stream);

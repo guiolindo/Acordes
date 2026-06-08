@@ -11,22 +11,22 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-typedef struct {
+struct kiss_fft_state {
     int nfft;
     int inverse;
     kiss_fft_cpx* twiddles;
     int* factors;
     kiss_fft_cpx* tmpbuf;
-} kiss_fft_state;
+};
 
-typedef struct {
+struct kiss_fftr_state {
     int nfft;
     int inverse;
     kiss_fft_cpx* twiddles;
-    kiss_fft_state* substate;
+    struct kiss_fft_state* substate;
     kiss_fft_cpx* tmpbuf;
     kiss_fft_cpx* super_twiddles;
-} kiss_fftr_state;
+};
 
 #define MAXFACTORS 32
 
@@ -176,22 +176,13 @@ void kiss_fft_free(kiss_fft_cfg cfg) {
 }
 
 /* Real FFT */
-typedef struct {
-    int nfft;
-    int inverse;
-    kiss_fft_cpx* twiddles;
-    kiss_fft_cfg substate;
-    kiss_fft_cpx* tmpbuf;
-    kiss_fft_cpx* super_twiddles;
-} kiss_fftr_state2;
-
 kiss_fftr_cfg kiss_fftr_alloc(int nfft, int inverse_fft, void* mem, size_t* lenmem) {
     int i;
     kiss_fftr_cfg st = NULL;
     size_t subsize = 0, memneeded;
 
     kiss_fft_alloc(nfft / 2, inverse_fft, NULL, &subsize);
-    memneeded = sizeof(kiss_fftr_state2) + subsize + sizeof(kiss_fft_cpx) * (nfft * 3 / 2);
+    memneeded = sizeof(struct kiss_fftr_state) + subsize + sizeof(kiss_fft_cpx) * (nfft * 3 / 2);
 
     if (lenmem == NULL) {
         st = (kiss_fftr_cfg)malloc(memneeded);
@@ -201,7 +192,7 @@ kiss_fftr_cfg kiss_fftr_alloc(int nfft, int inverse_fft, void* mem, size_t* lenm
     }
     if (!st) return NULL;
 
-    st->substate = (kiss_fft_cfg)((char*)st + sizeof(kiss_fftr_state2));
+    st->substate = (kiss_fft_cfg)((char*)st + sizeof(struct kiss_fftr_state));
     st->tmpbuf = (kiss_fft_cpx*)((char*)st->substate + subsize);
     st->super_twiddles = st->tmpbuf + nfft / 2;
 
