@@ -139,7 +139,7 @@ static void kf_factor(int n, int* facbuf) {
 
 kiss_fft_cfg kiss_fft_alloc(int nfft, int inverse_fft, void* mem, size_t* lenmem) {
     kiss_fft_cfg st = NULL;
-    size_t memneeded = sizeof(kiss_fft_state)
+    size_t memneeded = sizeof(struct kiss_fft_state)
         + sizeof(kiss_fft_cpx) * nfft
         + sizeof(int) * MAXFACTORS * 2
         + sizeof(kiss_fft_cpx) * nfft;
@@ -154,7 +154,7 @@ kiss_fft_cfg kiss_fft_alloc(int nfft, int inverse_fft, void* mem, size_t* lenmem
         int i;
         st->nfft = nfft;
         st->inverse = inverse_fft;
-        st->twiddles = (kiss_fft_cpx*)((char*)st + sizeof(kiss_fft_state));
+        st->twiddles = (kiss_fft_cpx*)((char*)st + sizeof(struct kiss_fft_state));
         st->factors = (int*)((char*)st->twiddles + sizeof(kiss_fft_cpx) * nfft);
         st->tmpbuf = (kiss_fft_cpx*)((char*)st->factors + sizeof(int) * MAXFACTORS * 2);
         for (i = 0; i < nfft; ++i) {
