@@ -44,19 +44,7 @@ jobs:
             ${{ runner.os }}-gradle-
 
       - name: Build Debug APK
-        run: gradle assembleDebug --no-daemon --stacktrace --info 2>&1 | tee build.log
-        continue-on-error: false
-
-      - name: Upload build log on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log
-          path: build.log
-          retention-days: 7
-
-      - name: Build Release APK
-        run: gradle assembleRelease --no-daemon
+        run: gradle assembleDebug --no-daemon --stacktrace
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
@@ -65,9 +53,15 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           retention-days: 30
 
+      - name: Build Release APK
+        run: gradle assembleRelease --no-daemon --stacktrace
+        continue-on-error: true
+
       - name: Upload Release APK
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: acordes-release
           path: app/build/outputs/apk/release/app-release.apk
           retention-days: 30
+        continue-on-error: true
