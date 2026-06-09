@@ -147,6 +147,7 @@ ChordEngine::ChordEngine() {
     memset(ring_buffer_,    0, sizeof(ring_buffer_));
     memset(smooth_chroma_,  0, sizeof(smooth_chroma_));
     memset(key_accumulator_, 0, sizeof(key_accumulator_));
+    for (int i = 0; i < VOTE_WINDOW; i++) chord_history_[i] = -1;
 
     buildChordTemplates(chord_templates_);
     buildKeyProfiles(key_profiles_);
@@ -230,8 +231,9 @@ void ChordEngine::processAudio(const float* data, int numFrames) {
     }
     rms = sqrtf(rms / FFT_SIZE);
 
-    if (rms < 0.002f) {
-        // Silence — don't fire callback, optionally send a "no chord" signal
+    if (rms < 0.003f) {
+        // Silence — clear vote history so next sound reacts quickly
+        for (int i = 0; i < VOTE_WINDOW; i++) chord_history_[i] = -1;
         return;
     }
 
@@ -247,17 +249,39 @@ void ChordEngine::processAudio(const float* data, int numFrames) {
     // Update key accumulator
     updateKeyAccumulator(chroma);
 
-    // Match chord
+    // Match chord (raw, per-frame)
     float chord_conf = 0;
     int chord_idx = matchChord(chroma, chord_conf);
+
+    // Temporal voting: push current frame into ring buffer of recent picks
+    chord_history_[chord_history_pos_] = chord_idx;
+    chord_history_pos_ = (chord_history_pos_ + 1) % VOTE_WINDOW;
+
+    // Count votes for each chord; pick one with at least VOTE_THRESHOLD agreement
+    int counts[NUM_CHORDS] = {0};
+    for (int i = 0; i < VOTE_WINDOW; i++) {
+        int c = chord_history_[i];
+        if (c >= 0) counts[c]++;
+    }
+    int best_votes = 0;
+    int vote_winner = stable_chord_idx_;
+    for (int c = 0; c < NUM_CHORDS; c++) {
+        if (counts[c] > best_votes) {
+            best_votes = counts[c];
+            vote_winner = c;
+        }
+    }
+    if (best_votes >= VOTE_THRESHOLD) {
+        stable_chord_idx_ = vote_winner;
+    }
 
     // Detect key
     float key_conf = 0;
     int key_idx = detectKey(key_conf);
 
-    if (callback_) {
+    if (callback_ && stable_chord_idx_ >= 0) {
         ChordResult result;
-        result.chordIndex  = chord_idx;
+        result.chordIndex  = stable_chord_idx_;
         result.keyIndex    = key_idx;
         result.confidence  = chord_conf;
         result.rms         = rms;
@@ -305,6 +329,25 @@ void ChordEngine::computeChroma(const float* window, float* chroma) {
         chroma[c] += mag;
     }
 
+    // Bass-note bias: dominant pitch class in 55-220 Hz is usually the root
+    // played by the bass guitar — boost it to disambiguate (e.g. C vs Am).
+    static const int bass_bin_lo = (int)(55.0f  * FFT_SIZE / SAMPLE_RATE);
+    static const int bass_bin_hi = (int)(220.0f * FFT_SIZE / SAMPLE_RATE);
+    int   bass_pc      = -1;
+    float bass_max_mag = 0.0f;
+    for (int k = bass_bin_lo; k <= bass_bin_hi; k++) {
+        int c = bin_to_chroma[k];
+        if (c < 0) continue;
+        float mag = freq_buf[k].r * freq_buf[k].r + freq_buf[k].i * freq_buf[k].i;
+        if (mag > bass_max_mag) {
+            bass_max_mag = mag;
+            bass_pc = c;
+        }
+    }
+    if (bass_pc >= 0) {
+        chroma[bass_pc] *= 1.5f;
+    }
+
     // Normalize chroma vector (L2)
     float sum = 0;
     for (int i = 0; i < 12; i++) sum += chroma[i] * chroma[i];
@@ -313,8 +356,8 @@ void ChordEngine::computeChroma(const float* window, float* chroma) {
         for (int i = 0; i < 12; i++) chroma[i] /= norm;
     }
 
-    // Smooth with previous chroma (IIR: alpha = 0.3)
-    const float alpha = 0.35f;
+    // Smooth with previous chroma (IIR). Lower alpha = more stable, less reactive.
+    const float alpha = 0.20f;
     for (int i = 0; i < 12; i++) {
         smooth_chroma_[i] = alpha * chroma[i] + (1.0f - alpha) * smooth_chroma_[i];
         chroma[i] = smooth_chroma_[i];

@@ -32,8 +32,7 @@ class ChordViewModel(app: Application) : AndroidViewModel(app), ChordListener {
         chordName: String,
         keyName: String
     ) {
-        if (confidence < 0.75f) return  // Low confidence — ignore
-
+        // C++ engine already applies temporal voting; trust whatever it emits.
         _state.update { current ->
             val newHistory = if (chordName != lastChord) {
                 lastChord = chordName

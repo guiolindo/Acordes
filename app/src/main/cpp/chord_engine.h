@@ -59,6 +59,13 @@ private:
     // Key profiles (Krumhansl-Schmuckler)
     float key_profiles_[NUM_KEYS][12];
 
+    // Temporal voting (stability): last 5 chord detections
+    static constexpr int VOTE_WINDOW = 5;
+    static constexpr int VOTE_THRESHOLD = 3;   // 3-of-5 wins
+    int chord_history_[VOTE_WINDOW];
+    int chord_history_pos_ = 0;
+    int stable_chord_idx_ = -1;
+
     // Oboe stream
     void* oboe_stream_ = nullptr;
 
