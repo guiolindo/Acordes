@@ -63,49 +63,55 @@ static std::unique_ptr<AudioCallback> g_callback;
 // Dom7:         root, root+4, root+7, root+10
 // Min7:         root, root+3, root+7, root+10
 static void buildChordTemplates(float templates[48][12]) {
-    // Weights: root=1.0, third=0.8, fifth=0.6, seventh=0.5
-    // Also add harmonic weighting: +12 contributes 0.4, +7 (fifth) adds overtone
-    static const int MAJOR_INTERVALS[] = {0, 4, 7, -1};
-    static const int MINOR_INTERVALS[] = {0, 3, 7, -1};
-    static const int DOM7_INTERVALS[]  = {0, 4, 7, 10};
-    static const int MIN7_INTERVALS[]  = {0, 3, 7, 10};
+    // Improved templates with two key ideas:
+    // (1) Positive weight = expected pitch classes (root, 3rd, 5th, 7th).
+    //     Root gets extra weight from its strong harmonic series.
+    // (2) Negative weight = pitch classes that should be ABSENT for this chord.
+    //     The major 3rd vs minor 3rd discriminator is what disambiguates
+    //     A vs Am, C vs Cm, etc. Without negative weights the templates are
+    //     too tolerant and chords sharing 2/3 notes flicker.
 
-    static const float WEIGHTS_TRI[] = {1.0f, 0.8f, 0.6f};
-    static const float WEIGHTS_7TH[] = {1.0f, 0.8f, 0.6f, 0.5f};
+    auto setTriad = [&](int chord_idx, int root, int third, bool isMinor) {
+        float* T = templates[chord_idx];
+        memset(T, 0, 12 * sizeof(float));
+        T[root]                = 1.50f;        // root + its octaves
+        T[(root + third) % 12] = 1.00f;        // 3rd (M3=4 or m3=3)
+        T[(root + 7) % 12]     = 0.90f;        // perfect 5th (also from root's 3rd harmonic)
+        // Mild boost for 5th's harmonic contribution
+        T[(root + 11) % 12]   += 0.08f;        // weak: leading tone in some overtones
+        // Negative discriminators
+        T[(root + (isMinor ? 4 : 3)) % 12] -= 0.50f;  // the OPPOSITE 3rd
+        T[(root + 1) % 12]    -= 0.20f;        // b9 (not in basic triad)
+        T[(root + 6) % 12]    -= 0.15f;        // tritone above root
+    };
+
+    auto setSeventh = [&](int chord_idx, int root, int third, int seventh, bool isMinor) {
+        float* T = templates[chord_idx];
+        memset(T, 0, 12 * sizeof(float));
+        T[root]                  = 1.50f;
+        T[(root + third) % 12]   = 1.00f;
+        T[(root + 7) % 12]       = 0.90f;
+        T[(root + seventh) % 12] = 0.70f;      // b7 in dom7/min7, M7 in maj7
+        // Negative: opposite 3rd kills Am vs A confusion in 7ths too
+        T[(root + (isMinor ? 4 : 3)) % 12] -= 0.45f;
+        T[(root + 1) % 12]       -= 0.15f;
+    };
 
     for (int root = 0; root < 12; root++) {
-        // Major (0-11)
-        memset(templates[root], 0, 12 * sizeof(float));
-        for (int i = 0; i < 3; i++) {
-            int note = (root + MAJOR_INTERVALS[i]) % 12;
-            templates[root][note] += WEIGHTS_TRI[i];
-        }
-        // Minor (12-23)
-        memset(templates[12 + root], 0, 12 * sizeof(float));
-        for (int i = 0; i < 3; i++) {
-            int note = (root + MINOR_INTERVALS[i]) % 12;
-            templates[12 + root][note] += WEIGHTS_TRI[i];
-        }
-        // Dom7 (24-35)
-        memset(templates[24 + root], 0, 12 * sizeof(float));
-        for (int i = 0; i < 4; i++) {
-            int note = (root + DOM7_INTERVALS[i]) % 12;
-            templates[24 + root][note] += WEIGHTS_7TH[i];
-        }
-        // Min7 (36-47)
-        memset(templates[36 + root], 0, 12 * sizeof(float));
-        for (int i = 0; i < 4; i++) {
-            int note = (root + MIN7_INTERVALS[i]) % 12;
-            templates[36 + root][note] += WEIGHTS_7TH[i];
-        }
+        setTriad  (      root, root, 4, false);          // Major
+        setTriad  (12 +  root, root, 3, true);           // Minor
+        setSeventh(24 +  root, root, 4, 10, false);      // Dom7
+        setSeventh(36 +  root, root, 3, 10, true);       // Min7
 
-        // Normalize each template
+        // L2-normalize each (so dot products are comparable). Negative
+        // entries stay negative; we normalize by the norm of the vector.
         for (int t : {0, 12, 24, 36}) {
+            float* T = templates[t + root];
             float sum = 0;
-            for (int j = 0; j < 12; j++) sum += templates[t + root][j] * templates[t + root][j];
+            for (int j = 0; j < 12; j++) sum += T[j] * T[j];
             float norm = sqrtf(sum);
             if (norm > 0) {
-                for (int j = 0; j < 12; j++) templates[t + root][j] /= norm;
+                for (int j = 0; j < 12; j++) T[j] /= norm;
             }
         }
     }
@@ -144,10 +150,11 @@ ChordEngine::ChordEngine() {
         fft_window_[i] = 0.5f * (1.0f - cosf(2.0f * M_PI * i / (FFT_SIZE - 1)));
     }
 
-    memset(ring_buffer_,    0, sizeof(ring_buffer_));
-    memset(smooth_chroma_,  0, sizeof(smooth_chroma_));
-    memset(key_accumulator_, 0, sizeof(key_accumulator_));
-    for (int i = 0; i < VOTE_WINDOW; i++) chord_history_[i] = -1;
+    memset(ring_buffer_,        0, sizeof(ring_buffer_));
+    memset(smooth_chroma_,      0, sizeof(smooth_chroma_));
+    memset(key_accumulator_,    0, sizeof(key_accumulator_));
+    memset(chroma_history_,     0, sizeof(chroma_history_));
+    memset(chord_smooth_scores_,0, sizeof(chord_smooth_scores_));
 
     buildChordTemplates(chord_templates_);
     buildKeyProfiles(key_profiles_);
@@ -232,8 +239,9 @@ void ChordEngine::processAudio(const float* data, int numFrames) {
     rms = sqrtf(rms / FFT_SIZE);
 
     if (rms < 0.003f) {
-        // Silence — clear vote history so next sound reacts quickly
-        for (int i = 0; i < VOTE_WINDOW; i++) chord_history_[i] = -1;
+        // Silence — decay the smoothed scores so the next sound starts fresh.
+        for (int c = 0; c < NUM_CHORDS; c++) chord_smooth_scores_[c] *= 0.7f;
+        chroma_hist_filled_ = 0;
         return;
     }
 
@@ -242,48 +250,131 @@ void ChordEngine::processAudio(const float* data, int numFrames) {
         fft_input_[i] = ring_buffer_[read_start + i] * fft_window_[i];
     }
 
-    // Compute chroma
+    // Per-frame chroma
     float chroma[12];
     computeChroma(fft_input_, chroma);
 
-    // Update key accumulator
-    updateKeyAccumulator(chroma);
+    // Aggregate over CHROMA_HIST frames (~70 ms) — matching uses the averaged
+    // chroma, which dramatically reduces noise compared to single-frame.
+    memcpy(chroma_history_[chroma_hist_pos_], chroma, 12 * sizeof(float));
+    chroma_hist_pos_ = (chroma_hist_pos_ + 1) % CHROMA_HIST;
+    if (chroma_hist_filled_ < CHROMA_HIST) chroma_hist_filled_++;
 
-    // Match chord (raw, per-frame)
-    float chord_conf = 0;
-    int chord_idx = matchChord(chroma, chord_conf);
-
-    // Temporal voting: push current frame into ring buffer of recent picks
-    chord_history_[chord_history_pos_] = chord_idx;
-    chord_history_pos_ = (chord_history_pos_ + 1) % VOTE_WINDOW;
-
-    // Count votes for each chord; pick one with at least VOTE_THRESHOLD agreement
-    int counts[NUM_CHORDS] = {0};
-    for (int i = 0; i < VOTE_WINDOW; i++) {
-        int c = chord_history_[i];
-        if (c >= 0) counts[c]++;
+    float agg_chroma[12] = {0};
+    for (int i = 0; i < chroma_hist_filled_; i++) {
+        for (int j = 0; j < 12; j++) agg_chroma[j] += chroma_history_[i][j];
     }
-    int best_votes = 0;
-    int vote_winner = stable_chord_idx_;
-    for (int c = 0; c < NUM_CHORDS; c++) {
-        if (counts[c] > best_votes) {
-            best_votes = counts[c];
-            vote_winner = c;
-        }
-    }
-    if (best_votes >= VOTE_THRESHOLD) {
-        stable_chord_idx_ = vote_winner;
+    for (int j = 0; j < 12; j++) agg_chroma[j] /= chroma_hist_filled_;
+
+    // Re-normalize aggregated chroma
+    {
+        float s = 0;
+        for (int j = 0; j < 12; j++) s += agg_chroma[j] * agg_chroma[j];
+        float n = sqrtf(s);
+        if (n > 1e-8f) for (int j = 0; j < 12; j++) agg_chroma[j] /= n;
     }
 
-    // Detect key
+    // Update key accumulator from aggregated chroma (slower-changing input)
+    updateKeyAccumulator(agg_chroma);
+
+    // Detect key for harmonic-field bias
     float key_conf = 0;
     int key_idx = detectKey(key_conf);
+
+    // Build in-key membership for the detected key (soft prior, never a filter)
+    // Major key (idx 0-11) scale degrees: I, ii, iii, IV, V, vi, vii°
+    //   = root + {0,2,4,5,7,9,11} as scale notes
+    // Minor key (12-23): natural minor scale = root + {0,2,3,5,7,8,10}
+    bool inkey_major_triad[12]   = {false};
+    bool inkey_minor_triad[12]   = {false};
+    if (key_idx >= 0 && key_conf > 0.55f) {
+        bool isMajorKey = key_idx < 12;
+        int  keyRoot    = key_idx % 12;
+        if (isMajorKey) {
+            // I, IV, V are major; ii, iii, vi are minor in a major key
+            inkey_major_triad[(keyRoot + 0) % 12] = true; // I
+            inkey_major_triad[(keyRoot + 5) % 12] = true; // IV
+            inkey_major_triad[(keyRoot + 7) % 12] = true; // V
+            inkey_minor_triad[(keyRoot + 2) % 12] = true; // ii
+            inkey_minor_triad[(keyRoot + 4) % 12] = true; // iii
+            inkey_minor_triad[(keyRoot + 9) % 12] = true; // vi
+        } else {
+            // i, iv, v are minor in natural minor; III, VI, VII are major
+            inkey_minor_triad[(keyRoot + 0) % 12] = true; // i
+            inkey_minor_triad[(keyRoot + 5) % 12] = true; // iv
+            inkey_minor_triad[(keyRoot + 7) % 12] = true; // v (or V in harmonic minor)
+            inkey_major_triad[(keyRoot + 3) % 12] = true; // III
+            inkey_major_triad[(keyRoot + 8) % 12] = true; // VI
+            inkey_major_triad[(keyRoot + 10)% 12] = true; // VII
+        }
+    }
+
+    // Compute raw template scores for all 48 chords, with key bias.
+    // Then IIR-smooth per-chord (stable across frames), then pick winner
+    // and only switch the displayed chord if margin > MARGIN_THRESHOLD.
+    float raw_scores[NUM_CHORDS];
+    for (int c = 0; c < NUM_CHORDS; c++) {
+        float dot = 0.0f;
+        for (int i = 0; i < 12; i++) dot += agg_chroma[i] * chord_templates_[c][i];
+
+        // Mild key bias (only on basic triads; 7ths are bias-neutral)
+        int root = c % 12;
+        if (c < 12) {                                  // major triads
+            if (inkey_major_triad[root])      dot *= 1.05f;
+            else if (key_conf > 0.55f)        dot *= 0.97f;
+        } else if (c < 24) {                           // minor triads
+            if (inkey_minor_triad[root])      dot *= 1.05f;
+            else if (key_conf > 0.55f)        dot *= 0.97f;
+        }
+
+        raw_scores[c] = dot;
+    }
+
+    // IIR-smooth each chord score
+    const float a = SCORE_SMOOTH_ALPHA;
+    for (int c = 0; c < NUM_CHORDS; c++) {
+        chord_smooth_scores_[c] = a * raw_scores[c] + (1.0f - a) * chord_smooth_scores_[c];
+    }
+
+    // Find best and runner-up among smoothed scores
+    int   best     = 0;
+    int   second   = 1;
+    float bestVal  = chord_smooth_scores_[0];
+    float secondVal= chord_smooth_scores_[1];
+    if (secondVal > bestVal) {
+        best = 1; second = 0;
+        float tmp = bestVal; bestVal = secondVal; secondVal = tmp;
+    }
+    for (int c = 2; c < NUM_CHORDS; c++) {
+        float v = chord_smooth_scores_[c];
+        if (v > bestVal) {
+            second = best;     secondVal = bestVal;
+            best   = c;        bestVal   = v;
+        } else if (v > secondVal) {
+            second = c;        secondVal = v;
+        }
+    }
+
+    // Margin-gated update: switch displayed chord only when the new candidate
+    // really pulls ahead. If the current stable chord still wins, keep it.
+    if (stable_chord_idx_ < 0) {
+        // First time — adopt the best as soon as it crosses a minimum quality
+        if (bestVal > 0.40f) stable_chord_idx_ = best;
+    } else if (best == stable_chord_idx_) {
+        // Already correct — nothing to do
+    } else {
+        float current_val = chord_smooth_scores_[stable_chord_idx_];
+        float margin      = bestVal - current_val;
+        if (margin > MARGIN_THRESHOLD) {
+            stable_chord_idx_ = best;
+        }
+    }
 
     if (callback_ && stable_chord_idx_ >= 0) {
         ChordResult result;
         result.chordIndex  = stable_chord_idx_;
         result.keyIndex    = key_idx;
-        result.confidence  = chord_conf;
+        result.confidence  = chord_smooth_scores_[stable_chord_idx_];
         result.rms         = rms;
         callback_(result);
     }
@@ -322,11 +413,13 @@ void ChordEngine::computeChroma(const float* window, float* chroma) {
         map_built = true;
     }
 
+    // Log-compress magnitudes: log1p(power * scale) keeps small bins audible
+    // and stops single loud transients (drum hit, vocal pop) from dominating.
     for (int k = 1; k <= FFT_SIZE / 2; k++) {
         int c = bin_to_chroma[k];
         if (c < 0) continue;
-        float mag = freq_buf[k].r * freq_buf[k].r + freq_buf[k].i * freq_buf[k].i;
-        chroma[c] += mag;
+        float power = freq_buf[k].r * freq_buf[k].r + freq_buf[k].i * freq_buf[k].i;
+        chroma[c] += log1pf(power * 1000.0f);
     }
 
     // Bass-note bias: dominant pitch class in 55-220 Hz is usually the root
@@ -338,9 +431,9 @@ void ChordEngine::computeChroma(const float* window, float* chroma) {
     for (int k = bass_bin_lo; k <= bass_bin_hi; k++) {
         int c = bin_to_chroma[k];
         if (c < 0) continue;
-        float mag = freq_buf[k].r * freq_buf[k].r + freq_buf[k].i * freq_buf[k].i;
-        if (mag > bass_max_mag) {
-            bass_max_mag = mag;
+        float power = freq_buf[k].r * freq_buf[k].r + freq_buf[k].i * freq_buf[k].i;
+        if (power > bass_max_mag) {
+            bass_max_mag = power;
             bass_pc = c;
         }
     }

@@ -59,12 +59,20 @@ private:
     // Key profiles (Krumhansl-Schmuckler)
     float key_profiles_[NUM_KEYS][12];
 
-    // Temporal voting (stability): last 5 chord detections
-    static constexpr int VOTE_WINDOW = 5;
-    static constexpr int VOTE_THRESHOLD = 3;   // 3-of-5 wins
-    int chord_history_[VOTE_WINDOW];
-    int chord_history_pos_ = 0;
-    int stable_chord_idx_ = -1;
+    // Chroma aggregation: average the last 6 frames (~70ms) for stable input
+    static constexpr int CHROMA_HIST = 6;
+    float chroma_history_[CHROMA_HIST][12];
+    int   chroma_hist_pos_ = 0;
+    int   chroma_hist_filled_ = 0;
+
+    // Per-chord IIR-smoothed score; the chord with the highest smoothed score
+    // becomes the candidate, but we only switch the displayed chord when its
+    // lead over the current is at least MARGIN_THRESHOLD.
+    static constexpr float SCORE_SMOOTH_ALPHA = 0.25f;
+    static constexpr float MARGIN_THRESHOLD   = 0.04f;
+    float chord_smooth_scores_[NUM_CHORDS];
+
+    int   stable_chord_idx_ = -1;
 
     // Oboe stream
     void* oboe_stream_ = nullptr;
